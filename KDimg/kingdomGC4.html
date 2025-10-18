@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3Dダンジョン：隠された鍵と壁の住人</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] }, colors: { 'fruit-red': '#FF4563', 'jelly-pink': '#FBCFE8' } } }
+        }
+    </script>
+    <style>
+        body { background-color: #f7fee7; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 0.5rem; overflow: hidden; }
+        #game-wrapper { max-width: 768px; width: 100%; background-color: white; border: 4px solid #FBCFE8; position: relative; }
+        #dungeon-canvas { width: 100%; height: auto; display: block; image-rendering: pixelated; background-color: #333; }
+        #game-controller { position: absolute; bottom: 0; left: 0; right: 0; padding: 0.5rem; height: 120px; background-color: rgba(10, 20, 80, 0.5); backdrop-filter: blur(4px); border-top: 1px solid rgba(255, 255, 255, 0.3); display: flex; justify-content: space-between; align-items: center; user-select: none; -webkit-user-select: none; }
+        #analog-stick-base { width: 100px; height: 100px; background-color: rgba(0,0,0,0.3); border-radius: 50%; border: 2px solid rgba(255,255,255,0.4); position: relative; }
+        #analog-stick-knob { width: 50px; height: 50px; background-color: rgba(50,50,50,0.8); border: 2px solid rgba(255,255,255,0.6); border-radius: 50%; position: absolute; top: 25px; left: 25px; transition: transform 0.05s ease-out; touch-action: none; }
+        #action-buttons { width: 100px; height: 100px; display: grid; grid-template-areas: ". tri ." "sq cir ." ". cro ."; justify-items: center; align-items: center; }
+        .action-button { width: 32px; height: 32px; border-radius: 50%; border: 2px solid rgba(0, 0, 0, 0.4); color: white; font-size: 1.1rem; font-weight: bold; display: flex; justify-content: center; align-items: center; touch-action: manipulation; }
+        .action-button:active { transform: scale(0.92); filter: brightness(1.2); }
+        #btn-triangle { background-color: #38A169; grid-area: tri; }
+        #btn-square { background-color: #D53F8C; grid-area: sq; }
+        #btn-circle { background-color: #DD6B20; grid-area: cir; }
+        #btn-cross { background-color: #3182CE; grid-area: cro; }
+    </style>
+</head>
+<body class="touch-none">
+    <div id="game-wrapper" class="rounded-xl shadow-2xl p-4 md:p-8 text-center">
+        <h1 class="text-3xl md:text-4xl font-bold mb-4 text-fruit-red border-b-2 border-fruit-red pb-2">
+            隠された鍵と壁の住人
+        </h1>
+        <div class="relative">
+            <canvas id="dungeon-canvas" width="640" height="480">読み込み中...</canvas>
+            <div id="game-controller">
+                <div id="analog-stick-base"><div id="analog-stick-knob"></div></div>
+                <div id="action-buttons">
+                    <button id="btn-triangle" class="action-button">△</button>
+                    <button id="btn-square" class="action-button">□</button>
+                    <button id="btn-circle" class="action-button">○</button>
+                    <button id="btn-cross" class="action-button">×</button>
+                </div>
+            </div>
+        </div>
+        <p id="message-area" class="text-base md:text-xl mt-4 text-gray-800 bg-jelly-pink p-3 rounded-lg border border-pink-400">
+            △ボタンで目の前を調べることができる。
+        </p>
+    </div>
+
+    <script>
+        // --- ゲームの基本設定 ---
+        const canvas = document.getElementById('dungeon-canvas');
+        const ctx = canvas.getContext('2d');
+        const messageArea = document.getElementById('message-area');
+        const SCREEN_WIDTH = canvas.width, SCREEN_HEIGHT = canvas.height, TILE_SIZE = 64;
+        let gameRunning = true;
+        
+        // --- ゲームの状態管理 ---
+        const gameState = { hasKey: false, npcTalkCount: 0 };
+
+        // --- 画像ファイル名リストをGitHubのURLに変更 ---
+        const imageSources = {
+            wall: 'https://raw.githubusercontent.com/kensincode/kingdomC/main/KDimg/kabe5.png',
+            wall2: 'https://raw.githubusercontent.com/kensincode/kingdomC/main/KDimg/kabe5-1.png',
+            key: 'https://raw.githubusercontent.com/kensincode/kingdomC/main/KDimg/keyAA11-1.png',
+            npc: 'https://raw.githubusercontent.com/kensincode/kingdomC/main/KDimg/kabe5o-5.png',
+            goal_closed: 'https://raw.githubusercontent.com/kensincode/kingdomC/main/KDimg/NCDoor72.png',
+            goal_open: 'https://raw.githubusercontent.com/kensincode/kingdomC/main/KDimg/CDoor72.png',
+        };
+
+        // --- ★ マップ更新 (3:鍵, 4:NPC, 5:隠し通路の壁) ---
+        const MAP = [
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+            [1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1],
+            [1,0,1,0,1,0,1,1,1,1,0,1,1,1,0,1],
+            [1,4,1,0,0,0,0,0,0,1,0,0,0,0,0,1],
+            [1,1,1,1,1,1,1,0,1,1,1,0,1,1,1,1],
+            [1,0,0,0,0,0,1,0,5,0,1,0,0,0,0,1],
+            [1,0,1,1,1,0,1,0,0,0,1,1,1,1,0,1],
+            [1,0,0,0,1,0,0,0,0,0,0,0,0,1,0,1],
+            [1,1,1,0,1,1,1,1,1,1,1,1,1,1,2,1],
+            [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+        ];
+        const MAP_WIDTH = MAP[0].length, MAP_HEIGHT = MAP.length;
+        const exploredMap = Array.from({ length: MAP_HEIGHT }, () => Array(MAP_WIDTH).fill(false));
+        const MINIMAP_TILE_SIZE = 8, MINIMAP_OFFSET = 10;
+        
+        // --- プレイヤーと操作 ---
+        const player = { x: TILE_SIZE * 1.5, y: TILE_SIZE * 1.5, angle: Math.PI / 4, moveSpeed: 2.5, turnSpeed: 3 * (Math.PI / 180) };
+        const keys = { up: false, down: false, left: false, right: false };
+        
+        const textures = {}; 
+        let particles = [];
+
+        // --- メインゲームループ ---
+        function gameLoop() {
+            if (gameRunning) update();
+            render();
+            if (!gameRunning && particles.length > 0) updateAndDrawConfetti();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- 更新処理 ---
+        function update() {
+            if (keys.left) player.angle -= player.turnSpeed;
+            if (keys.right) player.angle += player.turnSpeed;
+            const moveStep = (keys.up ? player.moveSpeed : 0) - (keys.down ? player.moveSpeed : 0);
+            if (moveStep !== 0) {
+                const newX = player.x + Math.cos(player.angle) * moveStep;
+                const newY = player.y + Math.sin(player.angle) * moveStep;
+                const mapGridX = Math.floor(newX / TILE_SIZE);
+                const mapGridY = Math.floor(newY / TILE_SIZE);
+                const nextTile = MAP[mapGridY]?.[mapGridX];
+                
+                // ★ 修正: ゴールは鍵がないと通行不可
+                const canMove = nextTile !== 1 && nextTile !== 4 && nextTile !== 5 && (nextTile !== 2 || gameState.hasKey);
+
+                if (canMove) {
+                    player.x = newX; player.y = newY;
+                    if (nextTile === 3) {
+                        gameState.hasKey = true;
+                        MAP[mapGridY][mapGridX] = 0;
+                        messageArea.textContent = '古の鍵を手に入れた！';
+                    }
+                    if (nextTile === 2 && gameState.hasKey) {
+                        gameRunning = false;
+                        messageArea.innerHTML = '👑 **ゲームクリア！** 👑';
+                        createConfetti();
+                    }
+                }
+            }
+            const gridX = Math.floor(player.x / TILE_SIZE);
+            const gridY = Math.floor(player.y / TILE_SIZE);
+            if (exploredMap[gridY]) exploredMap[gridY][gridX] = true;
+        }
+        
+        // --- 描画処理 ---
+        function render() {
+            ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            ctx.fillStyle = '#6ab8f7'; ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT / 2); // 天井
+            ctx.fillStyle = '#9b7653'; ctx.fillRect(0, SCREEN_HEIGHT / 2, SCREEN_WIDTH, SCREEN_HEIGHT); // 床
+            draw3DView();
+            drawAutoMap();
+        }
+
+        // --- 「調べる」機能 ---
+        function interact() {
+            if (!gameRunning) return;
+            const checkDist = TILE_SIZE * 0.8;
+            const frontX = player.x + Math.cos(player.angle) * checkDist;
+            const frontY = player.y + Math.sin(player.angle) * checkDist;
+            const gridX = Math.floor(frontX / TILE_SIZE);
+            const gridY = Math.floor(frontY / TILE_SIZE);
+            const tile = MAP[gridY]?.[gridX];
+            
+            if (tile === 4) { // NPCとの会話
+                const npcMessages = ["「壁に謎が？」", "「出口には鍵が必要だ」", "「古の伝説によれば、模様の違う壁には何か秘密が...」"];
+                messageArea.textContent = npcMessages[gameState.npcTalkCount % 3];
+                gameState.npcTalkCount++;
+            } else if (tile === 5) { // 隠し通路を開く
+                messageArea.textContent = '壁の模様が違う...押してみると、壁が奥にスライドした！';
+                MAP[gridY][gridX] = 0; // 壁を通路に変更
+                const keyY = gridY + 1;
+                const keyX = gridX;
+                // ★ 修正: 鍵を置く場所が壁でないことを確認
+                if(MAP[keyY]?.[keyX] === 0) {
+                    MAP[keyY][keyX] = 3; // 下に鍵を出現させる
+                }
+            } else if (tile === 2 && !gameState.hasKey) {
+                messageArea.textContent = '古の扉だ。鍵がかかっている...';
+            } else if (tile === 1 || tile === 2) {
+                messageArea.textContent = 'ただの壁のようだ。';
+            }
+        }
+
+        // --- 初期化 & イベントリスナー設定 ---
+        function init() {
+            // アナログスティックの制御
+            const stickBase = document.getElementById('analog-stick-base');
+            const stickKnob = document.getElementById('analog-stick-knob');
+            let stickActive = false;
+            let stickHandler = (e) => {
+                if (!stickActive) return;
+                e.preventDefault();
+                const baseRect = stickBase.getBoundingClientRect();
+                const touch = e.touches ? e.touches[0] : e;
+                let dx = touch.clientX - (baseRect.left + baseRect.width / 2);
+                let dy = touch.clientY - (baseRect.top + baseRect.height / 2);
+                const dist = Math.min(Math.hypot(dx, dy), baseRect.width / 2);
+                const angle = Math.atan2(dy, dx);
+                dx = Math.cos(angle) * dist; dy = Math.sin(angle) * dist;
+                stickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+                const threshold = baseRect.width * 0.2;
+                keys.up = dy < -threshold; keys.down = dy > threshold;
+                keys.left = dx < -threshold; keys.right = dx > threshold;
+            };
+            let endStick = (e) => {
+                if (!stickActive) return;
+                stickActive = false;
+                stickKnob.style.transform = `translate(0px, 0px)`;
+                keys.up=keys.down=keys.left=keys.right=false;
+                document.removeEventListener('mousemove', stickHandler);
+                document.removeEventListener('mouseup', endStick);
+            };
+            stickBase.addEventListener('mousedown', (e) => {
+                stickActive = true;
+                document.addEventListener('mousemove', stickHandler);
+                document.addEventListener('mouseup', endStick);
+            });
+            stickBase.addEventListener('touchstart', (e) => { stickActive = true; stickHandler(e); }, { passive: false });
+            stickBase.addEventListener('touchmove', stickHandler, { passive: false });
+            stickBase.addEventListener('touchend', endStick);
+            stickBase.addEventListener('touchcancel', endStick);
+
+            // アクションボタン
+            document.getElementById('btn-triangle')?.addEventListener('mousedown', (e) => { e.preventDefault(); interact(); });
+            document.getElementById('btn-triangle')?.addEventListener('touchstart', (e) => { e.preventDefault(); interact(); }, { passive: false });
+            
+            // キーボード
+            document.addEventListener('keydown', (e) => {
+                if (e.code === 'ArrowUp'||e.code==='KeyW') keys.up=true; if(e.code==='ArrowDown'||e.code==='KeyS')keys.down=true;
+                if (e.code === 'ArrowLeft'||e.code==='KeyA') keys.left=true; if(e.code==='ArrowRight'||e.code==='KeyD')keys.right=true;
+                if (e.code === 'KeyE') interact(); // Eキーでも調べられる
+            });
+            document.addEventListener('keyup', (e) => {
+                if (e.code === 'ArrowUp'||e.code==='KeyW') keys.up=false; if(e.code==='ArrowDown'||e.code==='KeyS')keys.down=false;
+                if (e.code === 'ArrowLeft'||e.code==='KeyA') keys.left=false; if(e.code==='ArrowRight'||e.code==='KeyD')keys.right=false;
+            });
+
+            loadTextures(() => { gameLoop(); });
+        }
+        
+        // --- ★ 画像読み込みエラー防止機能付きローダー ---
+        function createPlaceholderTexture(size) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ff00ff'; ctx.fillRect(0, 0, size, size);
+            ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, size/2, size/2);
+            ctx.fillRect(size/2, size/2, size/2, size/2);
+            return canvas;
+        }
+
+        function loadTextures(callback) {
+            let loadedCount = 0;
+            const totalImages = Object.keys(imageSources).length;
+            for (const key in imageSources) {
+                const img = new Image();
+                // ★ CORSエラーを回避するため、crossOriginプロパティを設定
+                img.crossOrigin = "Anonymous";
+                img.src = imageSources[key];
+                img.onload = () => {
+                    textures[key] = img;
+                    loadedCount++;
+                    if (loadedCount === totalImages) callback();
+                };
+                img.onerror = () => {
+                    console.error(`画像の読み込みに失敗: ${imageSources[key]}. 代替テクスチャを生成します。`);
+                    textures[key] = createPlaceholderTexture(TILE_SIZE);
+                    loadedCount++;
+                    if (loadedCount === totalImages) callback();
+                };
+            }
+        }
+        
+        // --- その他の関数群 (一部変更) ---
+        function draw3DView(){const fov=60*(Math.PI/180),rays=SCREEN_WIDTH/2,step=fov/rays;let angle=player.angle-fov/2;for(let i=0;i<rays;i++){const r=castRay(angle);if(r){const dist=r.distance*Math.cos(angle-player.angle),h=(TILE_SIZE/dist)*(SCREEN_WIDTH/2)/Math.tan(fov/2),top=(SCREEN_HEIGHT/2)-(h/2);let tex;switch(r.wallType){case 1:tex=textures.wall;break;case 2:tex=gameState.hasKey?textures.goal_open:textures.goal_closed;break;case 3:tex=textures.key;break;case 4:tex=textures.npc;break;case 5:tex=textures.wall2;break;default:continue}if(!tex)continue;const texX=Math.floor(r.isVertical?r.hitY%TILE_SIZE:r.hitX%TILE_SIZE);ctx.drawImage(tex,texX,0,1,tex.height,i*2,top,2,h)}angle+=step}}
+        function drawAutoMap(){for(let y=0;y<MAP_HEIGHT;y++){for(let x=0;x<MAP_WIDTH;x++){if(!exploredMap[y][x])continue;const type=MAP[y][x];if(type===1||type===4||type===5){ctx.fillStyle='rgba(80,80,80,0.7)'}else if(type===2){ctx.fillStyle=gameState.hasKey?'rgba(250,204,21,0.9)':'rgba(150,150,150,0.7)'}else if(type===3){ctx.fillStyle='rgba(0,200,255,0.9)'}else{ctx.fillStyle='rgba(200,200,200,0.7)'}ctx.fillRect(MINIMAP_OFFSET+x*MINIMAP_TILE_SIZE,MINIMAP_OFFSET+y*MINIMAP_TILE_SIZE,MINIMAP_TILE_SIZE,MINIMAP_TILE_SIZE)}}const pMapX=MINIMAP_OFFSET+(player.x/TILE_SIZE)*MINIMAP_TILE_SIZE,pMapY=MINIMAP_OFFSET+(player.y/TILE_SIZE)*MINIMAP_TILE_SIZE;ctx.fillStyle='#FF4563';ctx.beginPath();ctx.arc(pMapX,pMapY,MINIMAP_TILE_SIZE/2,0,2*Math.PI);ctx.fill()}
+        function createConfetti(){for(let i=0;i<200;i++)particles.push({x:Math.random()*SCREEN_WIDTH,y:Math.random()*SCREEN_HEIGHT-SCREEN_HEIGHT,vx:Math.random()*6-3,vy:Math.random()*5+2,size:Math.random()*8+4,color:`hsl(${Math.random()*360},100%,70%)`})}
+        function updateAndDrawConfetti(){ctx.globalAlpha=0.8;for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.05;if(p.y>SCREEN_HEIGHT)particles.splice(i,1);ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,p.size,p.size)}ctx.globalAlpha=1}
+        function castRay(angle){angle=(angle+2*Math.PI)%(2*Math.PI);const down=angle>0&&angle<Math.PI,right=angle<0.5*Math.PI||angle>1.5*Math.PI;let hD=Infinity,hX,hY,hT;let yS_h=down?TILE_SIZE:-TILE_SIZE,xS_h=yS_h/Math.tan(angle);let nHY=Math.floor(player.y/TILE_SIZE)*TILE_SIZE+(down?TILE_SIZE:-.001),nHX=player.x+(nHY-player.y)/Math.tan(angle);while(nHX>=0&&nHX<MAP_WIDTH*TILE_SIZE&&nHY>=0&&nHY<MAP_HEIGHT*TILE_SIZE){const gX=Math.floor(nHX/TILE_SIZE),gY=Math.floor(nHY/TILE_SIZE);const tile=MAP[gY]?.[gX];if(tile>0){hD=Math.hypot(nHX-player.x,nHY-player.y);hX=nHX;hY=nHY;hT=tile;break}nHX+=xS_h;nHY+=yS_h}let vD=Infinity,vX,vY,vT;let xS_v=right?TILE_SIZE:-TILE_SIZE,yS_v=xS_v*Math.tan(angle);let nVX=Math.floor(player.x/TILE_SIZE)*TILE_SIZE+(right?TILE_SIZE:-.001),nVY=player.y+(nVX-player.x)*Math.tan(angle);while(nVX>=0&&nVX<MAP_WIDTH*TILE_SIZE&&nVY>=0&&nVY<MAP_HEIGHT*TILE_SIZE){const gX=Math.floor(nVX/TILE_SIZE),gY=Math.floor(nVY/TILE_SIZE);const tile=MAP[gY]?.[gX];if(tile>0){vD=Math.hypot(nVX-player.x,nVY-player.y);vX=nVX;vY=nVY;vT=tile;break}nVX+=xS_v;nVY+=yS_v}if(hD<vD)return{distance:hD,hitX:hX,hitY:hY,isVertical:false,wallType:hT};else return{distance:vD,hitX:vX,hitY:vY,isVertical:true,wallType:vT}}
+        
+        init();
+    </script>
+</body>
+</html>
+
